@@ -1,0 +1,221 @@
+<?php
+
+/**
+* let a given form item have multiple values by adding add value / remove value buttons and handle all necessary ajax stuff
+*/
+function multivalue_get_multivalue_form_item(&$item) {
+  $errors = 0;
+
+  if (!isset($item['#multivalue'])) {
+    drupal_set_message(t('Multivalue Error: You need to set $item[\'#multivalue\'] array in order to get a multivalue form item. See multivalue docs how to do that.'), 'error');
+    return array(
+      '#markup' => t('You have an error in your item\'s #multivalue configuration. See in the Messages on top.'),
+    );
+  }
+
+  $item_path = explode('/', $item['#multivalue']['path']);
+  $item_key = array_pop($item_path);
+  $item_parent = implode('/', $item_path);
+
+  if (!isset($item['#multivalue']['path'])) {
+    drupal_set_message(t('Multivalue Error - Item @item: You need to set $item[\'#multivalue\'][\'path\'] to the items path in the form array. e.g. $form[\'foo\'][\'item\'][\'#multivalue\'][\'path\'] = \'foo/item\'', array('@item' => $item_key)), 'error');
+    $errors++;
+  }
+
+  if (!isset($item['#multivalue']['form'])) {
+    drupal_set_message(t('Multivalue Error - Item @item: You need to set $item[\'#multivalue\'][\'form\'] to the form array as a reference. e.g.: $form[\'foo\'][\'item\'][\'#multivalue\'][\'form\'] = &$form', array('@item' => $item_key)), 'error');
+    $errors++;
+  }
+
+  if (!isset($item['#multivalue']['form_state'])) {
+    drupal_set_message(t('Multivalue Error - Item @item: You need to set $item[\'#multivalue\'][\'form_state\'] to the form_state array as a reference. e.g.: $form[\'foo\'][\'item\'][\'#multivalue\'][\'form_state\'] = &$form_state'), 'error', array('@item' => $item_key));
+    $errors++;
+  }
+
+  if ($errors > 0) {
+    return array(
+      '#markup' => t('You have an error in your item\'s #multivalue configuration. See in the Messages on top.'),
+    );
+  }
+
+  $default_item_config = array(
+    'min_items' => 1, //the minimum number of inputs (hide remove buttons)
+    'add_text' => t('Add'),
+    'remove_text' => t('Remove'),
+  );
+  $item['#multivalue'] = array_merge($default_item_config, $item['#multivalue']);
+
+  $fieldset = array(
+    //'#type' => 'fieldset',
+    //'#collapsible' => TRUE,
+    //'#collapsed' => FALSE,
+    '#prefix' => '<div id="multivalue-' . drupal_clean_css_identifier($item_key) . '" class="multivalue">',
+    '#suffix' => '</div>',
+  );
+
+  if (isset($item['#title'])) {
+    //$fieldset['#title'] = $item['#title'];
+    $fieldset['#prefix'] .= '<label>' . $item['#title'] . '</label>';
+    unset($item['#title']);
+  }
+
+  if (empty($item['#multivalue']['form_state']['multivalue_' . $item_key . '_count'])) {
+    //init with given default values if existing
+    if (isset($item['#multivalue']['initialize'])) {
+      $item['#multivalue']['form_state']['multivalue_' . $item_key . '_count'] = count($item['#multivalue']['initialize']);
+    }
+    else {
+      $item['#multivalue']['form_state']['multivalue_' . $item_key . '_count'] = $item['#multivalue']['min_items'];
+    }
+  }
+
+  for ($i=0; $i<$item['#multivalue']['form_state']['multivalue_' . $item_key . '_count']; $i++) {
+    if (isset($item['#multivalue']['initialize'][$i])) {
+      $item['#default_value'] = $item['#multivalue']['initialize'][$i]['default_value'];
+    }
+    $fieldset[$item_key . '_' . $i] = array(
+      '#prefix' => '<div class="multivalue-item">',
+      '#suffix' => '</div>',
+      $item_key => $item,
+    );
+
+    if (!isset($item['#multivalue']['no_remove_button'])) {
+      $fieldset['remove_' . $item_key . '_' . $i] = array(
+        '#type' => 'submit',
+        '#default_value' => $item['#multivalue']['remove_text'],
+        '#submit' => array('multivalue_multivalue_remove'),
+        '#name' => 'multivalue_remove_' . $item_key . '_' . $i,
+        '#ajax' => array(
+          'callback' => 'multivalue_multivalue_ajax_callback',
+          'wrapper' => drupal_clean_css_identifier('multivalue-' . $item_key),
+          'progress' => array(
+            'type' => 'throbber',
+            'message' => '',
+          ),
+        ),
+      );
+    }
+
+    /*
+      We unset the item's form and form state here, as this would cause
+      infinite references in the final forms array.
+      anyway there's no need to add form and form state to the form array.
+      Note that we unset it in $fieldset in order to keep the references in
+      $item so we can still change things in form and form state.
+    */
+    unset($fieldset[$item_key . '_' . $i][$item_key]['#multivalue']['form_state']);
+    unset($fieldset[$item_key . '_' . $i][$item_key]['#multivalue']['form']);
+  }
+  if (isset($item['#multivalue']['form_state']['remove_item_' . $item_key])) {
+    unset($item['#multivalue']['form_state']['remove_item_' . $item_key]);
+  }
+
+  if ($item['#multivalue']['form_state']['multivalue_' . $item_key . '_count'] <= $item['#multivalue']['min_items']) {
+    foreach ($fieldset as $key => $value) {
+      if (strlen($key) < strlen($item_key) + 2 || substr($key, 0, strlen($item_key)) != $item_key) {
+        continue;
+      }
+      unset($fieldset[$key]['remove_' . $key]); //no remove buttons if the current count is the minimum
+    }
+  }
+
+  //the add button
+  $fieldset['multivalue_add_' . $item_key] = array(
+    '#prefix' => '<div class="add">',
+    '#suffix' => '</div>',
+    '#type' => 'submit',
+    '#value' => $item['#multivalue']['add_text'],
+    '#submit' => array('multivalue_multivalue_add'),
+    '#name' => 'multivalue_add_' . $item_key,
+    '#ajax' => array(
+      'callback' => 'multivalue_multivalue_ajax_callback',
+      'wrapper' => drupal_clean_css_identifier('multivalue-' . $item_key),
+      'progress' => array(
+        'type' => 'throbber',
+        'message' => '',
+      ),
+    ),
+  );
+
+  return $fieldset;
+}
+
+function multivalue_multivalue_ajax_callback($form, &$form_state) {
+  //find the used multivalue element
+  $item_data = _multivalue_multivalue_get_item_data_by_form_state($form_state);
+  $result =& $form;
+  foreach ($form_state['triggering_element']['#parents'] AS $el) {
+    if (isset($result[$el])) {
+      $result =& $result[$el];
+    }
+    if ($el == $item_data['item_key']) {
+      break;
+    }
+  }
+  return $result;
+}
+
+function multivalue_multivalue_add($form, &$form_state) {
+  //find the used multivalue element
+  $item_data = _multivalue_multivalue_get_item_data_by_form_state($form_state);
+  $form_state['multivalue_' . $item_data['item_key'] . '_count']++;
+  $form_state['rebuild'] = TRUE;
+}
+
+function multivalue_multivalue_remove(&$form, &$form_state) {
+  //find the used multivalue element
+  $item_data = _multivalue_multivalue_get_item_data_by_form_state($form_state);
+  $form_state['multivalue_remove'][$item_data['item_key']] = $item_data['item_id'];
+  $form_state['rebuild'] = TRUE;
+}
+
+function _multivalue_multivalue_get_item_data_by_form_state($form_state) {
+  $button_name = end($form_state['triggering_element']['#parents']); //remove_[item_key]_id
+  preg_match("/remove_(.+)_([0-9]+)/", $button_name, $matches);
+
+  if (count($matches) < 2) {
+    preg_match("/multivalue_add_(.+)/", $button_name, $matches);
+  }
+
+  if (count($matches) < 2) {
+    drupal_set_message(t('Multivalue Error: could not find item by triggering_element!'), 'error');
+    return FALSE;
+  }
+
+  return array(
+    'item_key' => $matches[1],
+    'item_id' => @$matches[2], //if the add button was pressed there's no item id
+  );
+}
+
+
+function multivalue_multivalue_update_values_form_builder(&$form, &$form_state) {
+  if (isset($form_state['multivalue_remove'])) {
+    foreach ($form_state['multivalue_remove'] AS $item_key => $item_id) {
+      for ($i=0; $i<$form_state['multivalue_' . $item_key . '_count'] - 1; $i++) {
+        if ($i >= $item_id) {
+          //get the parents in $form_state['values'] and $form_state['input']
+          $values_item =& $form_state['values'];
+          $input_item =& $form_state['input'];
+          foreach ($form_state['triggering_element']['#parents'] AS $el) {
+            if (isset($values_item[$el])) {
+              $values_item =& $values_item[$el];
+            }
+            if (isset($input_item[$el])) {
+              $input_item =& $input_item[$el];
+            }
+            if ($el == $item_key) {
+              break;
+            }
+          }
+
+          //use the next item's value
+          $values_item[$item_key . '_' . $i][$item_key] = $values_item[$item_key . '_' . ($i+1)][$item_key];
+          $input_item[$item_key . '_' . $i][$item_key] = $values_item[$item_key . '_' . ($i+1)][$item_key];
+        }
+      }
+      $form_state['multivalue_' . $item_key . '_count']--;
+      unset($form_state['multivalue_remove'][$item_key]);
+    }
+  }
+}

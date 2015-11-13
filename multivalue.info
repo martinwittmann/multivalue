@@ -1,0 +1,5 @@
+name = Multivalue Form Items
+description = Easily create form items that accept multiple values
+package = Other
+core = 7.x
+
